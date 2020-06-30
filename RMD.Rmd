@@ -226,7 +226,7 @@ data %>%
 ## map popular dot and heat map for dropoff and pick locations
 
 ```{r,include=FALSE}
-register_google(key = "AIzaSyCflFrg_Ih10kYUYVrk9KSKf0XsVlvODYY")
+register_google(key = "xxxxxxxxxxxxxxxxxxxxxxxxxxx")
 ```
 min(data$pickup_lon)
 max(data$pickup_lon)
