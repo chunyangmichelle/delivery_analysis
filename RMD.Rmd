@@ -1,12 +1,6 @@
----
-title: "Jumpman23 -- New Market Analysis"
-author: "Chun(Michelle) Yang"
-date: "6/29/2020"
----
-# R Markdown
-input data
-```{r}
-data <- read.csv("~/Desktop/Jumpman23/analyze_me.csv",na.strings = c(""," "))
+
+title: "New Market Analysis"
+
 ```
 
 ```{r,message=FALSE}
