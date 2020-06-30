@@ -1,0 +1,305 @@
+---
+title: "Jumpman23 -- New Market Analysis"
+author: "Chun(Michelle) Yang"
+date: "6/29/2020"
+---
+# R Markdown
+input data
+```{r}
+data <- read.csv("~/Desktop/Jumpman23/analyze_me.csv",na.strings = c(""," "))
+```
+
+```{r,message=FALSE}
+library(ggplot2)
+library(lubridate)
+library(maps)
+library(dplyr)
+library(geosphere)
+library(ggmap) 
+```
+
+
+## Integrity1:Missing value for some columns: how_long_it_took_to_order,pickup arrival and left time,item quantities and customer order time.
+Solution for analysis: keep them as they are for now
+Suggestion: check if it is APP or ETL problem, set the field on app/ in database not NULL
+
+```{r}
+sapply(X = data, FUN = function(x) sum(is.na(x)))
+```
+
+
+## Integrity2: Deliveryid is not unique, primary key should be unique,same deliveryid has multiple item rows
+Solution: I checked all dups, found it is same delivery with same cusotmer,jumpman and resuaurant, but one line for each differnet items,
+combined items to one delivery
+Suggestion: Better to have referenced table of ordered items realted information with delivery_id 
+```{r}
+sapply(X = data, FUN = function(x) length(unique(x)))
+```
+
+
+```{r}
+dup<-data[duplicated(data$delivery_id) | duplicated(data$delivery_id, fromLast=TRUE),]
+dup<-dup[order(dup$delivery_id),]
+```
+
+after adjustment, now 5214 rows
+```{r}
+data <- data%>%
+  group_by(delivery_id) %>%
+  mutate(Item_names = paste0(item_name, collapse = ","),
+  Item_category_names = paste0(item_category_name, collapse = ","),
+  Item_quantities= sum(item_quantity))
+data<- data[!duplicated(data$delivery_id), ]
+```
+
+## Integrity3: delivery_started time is ealier than when jumpman arrived at pickup,assuming delivery start time is when jumpman accepted the oreder, not possible to have this situation
+Solution: keep all for now since max timediff is less than 3 minutes and use arrived pickuptime as startdelivery for analysis
+Suggestion: check locatime calculation or if time is tracked correctly
+
+```{r}
+data$when_the_delivery_started<-ymd_hms(data$when_the_delivery_started)
+data$when_the_Jumpman_arrived_at_pickup<-ymd_hms(data$when_the_Jumpman_arrived_at_pickup)
+data$when_the_Jumpman_left_pickup<-ymd_hms(data$when_the_Jumpman_left_pickup)
+data$when_the_Jumpman_arrived_at_dropoff<-ymd_hms(data$when_the_Jumpman_arrived_at_dropoff)
+data$when_the_Jumpman_left_pickup<-ymd_hms(data$when_the_Jumpman_left_pickup)
+data$how_long_it_took_to_order=hms(data$how_long_it_took_to_order)
+
+```
+
+```{r}
+min(difftime(data$when_the_Jumpman_arrived_at_pickup,data$when_the_delivery_started,units="mins"),na.rm=T)
+#data[difftime(data$when_the_Jumpman_arrived_at_pickup,data$when_the_delivery_started,units="mins")<0,c(15,16)]
+```
+
+```{r}
+data<-data%>%
+  
+  mutate(
+    dropoffdistance=distHaversine(cbind(pickup_lon,pickup_lat), cbind(dropoff_lon, dropoff_lat))/1609.34,
+    pickuptimemins=difftime(when_the_Jumpman_left_pickup,when_the_Jumpman_arrived_at_pickup,units="mins"),
+    dropofftimemins=difftime(when_the_Jumpman_arrived_at_dropoff,when_the_Jumpman_left_pickup,units='mins'),
+    totaltimemins=difftime(when_the_Jumpman_arrived_at_dropoff,when_the_Jumpman_arrived_at_pickup,units="mins"),
+    ordertimemins=hour(how_long_it_took_to_order)*60+minute(how_long_it_took_to_order),
+    dropmph=dropoffdistance/(as.numeric(dropofftimemins)/60)
+)        
+```
+
+## Integrity4: Bicycle is the most popular vehicle type, 30 MPH is clearly too fast for a bicycle on a public road.
+Solution: Remove rows which abnormal MPH
+Suggestion: check if data loading for time tracking and geo location is accurate
+
+It is possible there is no data integrity problem.
+it makes sense that bicycle is the most popular in crowded NY,possilbly we can seek partnership with bike sharing companies.
+for those reckless driving or speeding, we can find jumpman and give them a warning, as safety is the priority.
+
+
+```{r}
+data%>%group_by(vehicle_type)%>%
+  summarise(n=n()
+            ,min=min(dropmph,na.rm =T)
+            ,max=max(dropmph,na.rm =T)
+            ,mediantotaltime=median(as.numeric(totaltimemins),na.rm=T))%>%
+ mutate (percentage=paste0(round(n/sum(n)*100, 2), "%"))
+```
+
+
+
+```{r}
+data<-data[!(data$dropmph>30 &data$vehicle_type=='bicycle'&!is.na(data$dropmph)),]
+```
+
+save(data, file = "data.Rdata")
+load(file = "data.Rdata")
+
+## Vehicle
+Total time = drop_off_arrival-pick_up_arrival, this is the time period Jumpan 23 is paying the jumpman, which represents the cost in the business model. tiangle is the mean.
+Most of of total time is less than 1 hour, whatever the vehicle type. but some outliers happens, which makes right skewed data.
+overrall, comparing the mediam totaltime, bicycle,scooter and walker have better performance than truck.possibly it is hard for truck to find parking spaces.
+Suggestions: for outliers, find the reason, if it is technical issues on APP end, or jumpman behavior.
+```{r}
+ggplot(data=subset(data, !is.na(totaltimemins)), aes(x = vehicle_type, y = as.numeric(totaltimemins)))+
+geom_boxplot() +
+stat_summary(fun = "mean", geom = "point", shape = 24, size = 1, fill = "white")+ geom_hline(yintercept=60, linetype="dashed", color = "darkred", size=1)+
+ylab("totla time in minutes")
+```
+ 
+## Time
+most popular on Sunday, Wednesday and Thursday night.
+This is high demand, let's see responding delivery time, how the delivery performs. 
+
+Hour and weekday order count -- assign more jumpman
+Hour and weekday median pick up time -- food waiting (order itself and preordered)
+--order themselves, expand opportunity to preorder
+--preordered, assign more, retain orders for postmate if not perishable
+Hour and weekday median drop off time --traffic situation, allocation system
+Hour and weekday median drop off time -- inform customer ETA
+```{r}
+
+data %>%
+mutate(Day = wday(when_the_delivery_started, label = T, abbr = F), Hour = hour(when_the_delivery_started))%>%
+  group_by(Day, Hour)%>% 
+  summarise(Count = n()) %>%
+ggplot(aes(x = Day, y = as.factor(Hour), fill = Count )) + geom_tile() +
+scale_fill_gradient(low = "white", high = "darkred") + ggtitle("Heatmap of orders in NY") + 
+xlab("Day of week") + ylab ("Hour of day") 
+
+```
+ealier in the morning
+
+```{r}
+data %>%
+mutate(Day = wday(when_the_delivery_started, label = T, abbr = F), Hour = hour(when_the_delivery_started))%>%
+  group_by(Day, Hour)%>% 
+  summarise(medianpickuptime = median(as.numeric(pickuptimemins),na.rm=T)) %>%
+ggplot(aes(x = Day, y = as.factor(Hour), fill = medianpickuptime )) + geom_tile() +
+scale_fill_gradient(low = "white", high = "darkred") + ggtitle("Median pickup Time") + 
+xlab("Day of week") + ylab ("Hour of day") 
+
+```
+
+
+```{r}
+data %>%
+mutate(Day = wday(when_the_delivery_started, label = T, abbr = F), Hour = hour(when_the_delivery_started))%>%
+  group_by(Day, Hour)%>% 
+  summarise(medianpickuptime = median(as.numeric(dropofftimemins),na.rm=T)) %>%
+ggplot(aes(x = Day, y = as.factor(Hour), fill = medianpickuptime )) + geom_tile() +
+scale_fill_gradient(low = "white", high = "darkred") + ggtitle("Median dropoff Time") + 
+xlab("Day of week") + ylab ("Hour of day") 
+
+```
+## customer order time
+
+3% are longer than 20 minutes,to win these customers, we can find the customers and find reasons, or give incentives or notice to help them make decisions faster.
+```{r}
+ggplot(subset(data,!is.na(ordertimemins)), aes(x=ordertimemins))+geom_bar(fill='white',colour='black')
+```
+
+3% of orders take longer than 20 minutes"
+```{r}
+nrow(data[data$ordertimemins>20&!is.na(data$ordertimemins),])/nrow(data[!is.na(data$ordertimemins),])*100
+``` 
+
+## category Italian, burger most popular
+compare to the market share of each category in NY, create new partnerships with more restaurants  if lower than the market average, those are opportunities
+```{r}
+data %>%
+  filter(!is.na(place_category)) %>%
+  group_by(place_category) %>%
+  summarise(count = n()) %>% 
+  top_n(20)%>%
+  ggplot(aes(x = count, y=reorder(place_category, count))) + geom_point(size = 3)+
+  ylab("place_category")
+```
+ 
+## Shake shack win the majority
+pickupplace get partnership with them, preordered and promotion more
+
+```{r}
+data %>%
+  filter(!is.na(pickup_place)) %>%
+  group_by(pickup_place) %>%
+  summarise(count = n()) %>% 
+  top_n(20)%>%
+  ggplot(aes(x = count, y=reorder(pickup_place, count))) + geom_point(size = 3)+
+  ylab("pickup_place")
+```
+
+## items each order, 70% only one itme per order
+```{r}
+
+data<-data %>%
+  mutate(itemqgroup = case_when(Item_quantities >= 4 ~ "4+",Item_quantities ==1 ~ "1",Item_quantities == 2 ~ "2",
+                                Item_quantities == 3 ~ "3"))
+```
+
+most customer only order one item per order, like to to bundle promoting to attract them to order more.
+```{r}
+
+
+data %>%
+  filter(!is.na(itemqgroup)) %>%
+  group_by(itemqgroup) %>%
+  summarise(perc= n()/nrow(.)) %>% 
+  ggplot(aes(x="",y=perc,fill=itemqgroup))+
+  geom_bar(width=1,stat='identity')+coord_polar("y",start=0)+
+  geom_text(aes(label=paste0(round(perc*100,2),"%")), size=3,position = position_stack(vjust = 0.5))+
+  xlab("")+ylab("")+ggtitle("percentage of itme quantities per order")+
+  scale_fill_brewer(palette="Reds")+theme_minimal()
+
+```
+             
+## map popular dot and heat map for dropoff and pick locations
+
+```{r,include=FALSE}
+register_google(key = "AIzaSyCflFrg_Ih10kYUYVrk9KSKf0XsVlvODYY")
+```
+min(data$pickup_lon)
+max(data$pickup_lon)
+min(data$pickup_lat)
+max(data$pickup_lat)
+min(data$dropoff_lon)
+max(data$dropoff_lon)
+min(data$dropoff_lat)
+max(data$dropoff_lat)
+
+
+ 
+```{r,message=FALSE}
+NY<-get_map(location = "New York",zoom=11,full_picture=TRUE)
+```
+
+
+
+```{r,warning=FALSE,message=FALSE}
+
+ggmap(NY) +geom_point(data=data,aes(x = dropoff_lon, y = dropoff_lat),alpha=0.25, size = 0.5)+xlim(-74.1,-73.9)+ylim(40.64,40.85)
+```
+```{r,warning=FALSE,message=FALSE}
+ggmap(NY) +
+stat_density2d(data = data,
+aes(x = dropoff_lon, y = dropoff_lat, fill = ..level..), geom = "polygon", alpha = 0.7) +
+scale_fill_gradient(low= "white", high = "#bd0026") +
+xlim(-74.1,-73.9)+ylim(40.64,40.85)+ggtitle("dropoff location")
+```
+
+
+```{r,warning=FALSE,message=FALSE}
+ggmap(NY) +geom_point(data=data,aes(x = pickup_lon, y = pickup_lat),alpha=0.25, size = 0.5)+
+  xlim(-74.1,-73.9)+ylim(40.64,40.85)
+```
+
+
+```{r,warning=FALSE,message=FALSE}
+ggmap(NY) +
+stat_density2d(data = data,
+aes(x =pickup_lon, y = pickup_lat, fill = ..level..), geom = "polygon", alpha = 0.7) +
+scale_fill_gradient(low= "white", high = "#bd0026") +
+xlim(-74.1,-73.9)+ylim(40.64,40.85)+ggtitle("pickup location")
+```
+
+## Map find routes for long distance
+longest each vehicle type
+```{r,warning=FALSE,message=FALSE}
+top1 <-data%>%
+  group_by(vehicle_type)%>%
+  top_n(1,dropoffdistance)
+ggmap(NY)+
+ geom_segment(aes(x = pickup_lon, y = pickup_lat, xend = dropoff_lon, yend = dropoff_lat,colour=vehicle_type),top1)+
+xlim(-74.1,-73.9)+ylim(40.7,40.85)
+```
+
+Bicycle: 15-20 minutes per mile
+Walker: 4 minutes per mile
+so it takes almost 20 minutes for walker if distance is 1+ miles and for cyclist if distance is 4+ miles
+miles over these are not wise, and good for jumpman
+
+```{r,warning=FALSE,message=FALSE}
+toolong <-data%>%
+ filter((vehicle_type=='bicycle' & dropoffdistance>4)|(vehicle_type=='walker' & dropoffdistance>1))
+
+ggmap(NY)+
+ geom_segment(aes(x = pickup_lon, y = pickup_lat, xend = dropoff_lon, yend = dropoff_lat,colour=vehicle_type),toolong)+
+xlim(-74.1,-73.9)+ylim(40.7,40.85)
+```
+
